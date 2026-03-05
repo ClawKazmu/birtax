@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIR Tax Calculator</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+        h1 { color: #333; }
+        .form-group { margin-bottom: 1rem; }
+        label { display: block; margin-bottom: 0.5rem; font-weight: bold; }
+        input[type="number"] { width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; }
+        .radio-group, .checkbox-group { margin: 0.5rem 0; }
+        .radio-group label, .checkbox-group label { font-weight: normal; }
+        button { background: #0064d2; color: white; padding: 0.75rem 1.5rem; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0053b3; }
+        #result { margin-top: 2rem; padding: 1rem; background: #f5f5f5; border-radius: 4px; }
+        .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        .result-item { border-bottom: 1px solid #ddd; padding-bottom: 0.5rem; }
+        .note { margin-top: 1rem; color: #666; font-size: 0.9rem; }
+        .taxpayer-fields { margin-top: 1rem; padding: 1rem; border: 1px solid #ddd; border-radius: 4px; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <h1>BIR Tax Calculator (2024 TRAIN)</h1>
+    <p>Estimate Philippine income tax for employees and self-employed individuals.</p>
+
+    <form id="taxForm">
+        <div class="form-group">
+            <label>Taxpayer Type</label>
+            <div class="radio-group">
+                <label><input type="radio" name="taxpayer_type" value="employee" checked> Employee (compensation income)</label>
+                <label><input type="radio" name="taxpayer_type" value="self-employed"> Self-Employed / Professional</label>
+                <label><input type="radio" name="taxpayer_type" value="corporation"> Corporation</label>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="gross_annual_income">Gross Annual Income (PHP)</label>
+            <input type="number" id="gross_annual_income" name="gross_annual_income" min="0" step="0.01" required>
+        </div>
+
+        <div id="employee_fields" class="taxpayer-fields">
+            <h3>Employee Deductions & Exemptions</h3>
+            <div class="form-group">
+                <label for="sss">SSS Contributions (annual, PHP)</label>
+                <input type="number" id="sss" name="sss" min="0" step="0.01" value="0">
+            </div>
+            <div class="form-group">
+                <label for="philhealth">PhilHealth Premiums (annual, PHP)</label>
+                <input type="number" id="philhealth" name="philhealth" min="0" step="0.01" value="0">
+            </div>
+            <div class="form-group">
+                <label for="pagibig">Pag-IBIG Contributions (annual, PHP)</label>
+                <input type="number" id="pagibig" name="pagibig" min="0" step="0.01" value="0">
+            </div>
+            <div class="form-group">
+                <label for="personal_exemption">Additional Personal Exemption (PHP) - Simulation</label>
+                <input type="number" id="personal_exemption" name="personal_exemption" min="0" step="0.01" value="0">
+                <small>Basic exemption of PHP 250,000 is already applied. Use this for extra exemptions (e.g., dependents).</small>
+            </div>
+            <div class="form-group">
+                <label for="number_of_dependents">Number of Dependents</label>
+                <input type="number" id="number_of_dependents" name="number_of_dependents" min="0" step="1" value="0">
+                <small>Assumed exemption: PHP 50,000 per dependent (simulation).</small>
+            </div>
+            <div class="form-group">
+                <label for="deductions">Other Deductions (e.g., health insurance, etc., PHP)</label>
+                <input type="number" id="deductions" name="deductions" min="0" step="0.01" value="0">
+            </div>
+        </div>
+
+        <div id="self_employed_fields" class="taxpayer-fields hidden">
+            <h3>Self-Employed Options</h3>
+            <div class="form-group">
+                <div class="checkbox-group">
+                    <label><input type="checkbox" id="use_flat_tax" name="use_flat_tax"> Use 8% Flat Tax on gross receipts (exceeding PHP 250,000)</label>
+                </div>
+                <small>If selected, no deductions are allowed. Otherwise, graduated rates apply and you may enter deductions below.</small>
+            </div>
+            <div class="form-group">
+                <label for="se_deductions">Business Deductions / Expenses (PHP)</label>
+                <input type="number" id="se_deductions" name="deductions_self" min="0" step="0.01" value="0">
+            </div>
+            <div class="form-group">
+                <label for="se_personal_exemption">Additional Personal Exemption (PHP) - Simulation</label>
+                <input type="number" id="se_personal_exemption" name="personal_exemption_self" min="0" step="0.01" value="0">
+            </div>
+            <div class="form-group">
+                <label for="se_number_of_dependents">Number of Dependents</label>
+                <input type="number" id="se_number_of_dependents" name="number_of_dependents_self" min="0" step="1" value="0">
+            </div>
+        </div>
+
+        <div id="corporation_fields" class="taxpayer-fields hidden">
+            <h3>Corporation Deductions</h3>
+            <div class="form-group">
+                <label for="corp_deductions">Total Deductions (PHP)</label>
+                <input type="number" id="corp_deductions" name="deductions_corp" min="0" step="0.01" value="0">
+            </div>
+        </div>
+
+        <button type="submit">Calculate Tax</button>
+    </form>
+
+    <div id="result" class="hidden">
+        <h2>Results</h2>
+        <div class="result-grid">
+            <div class="result-item"><strong>Annual Tax Due:</strong> <span id="annual_tax_due"></span> PHP</div>
+            <div class="result-item"><strong>Monthly Tax:</strong> <span id="monthly_tax"></span> PHP</div>
+            <div class="result-item"><strong>Taxable Income:</strong> <span id="taxable_income"></span> PHP</div>
+            <div class="result-item"><strong>Tax Rate Applied:</strong> <span id="tax_rate_applied"></span></div>
+        </div>
+        <p class="note" id="notes"></p>
+    </div>
+
+    <script>
+        const form = document.getElementById('taxForm');
+        const resultDiv = document.getElementById('result');
+        const taxpayerTypeRadios = document.querySelectorAll('input[name="taxpayer_type"]');
+        const employeeFields = document.getElementById('employee_fields');
+        const selfEmployedFields = document.getElementById('self_employed_fields');
+        const corporationFields = document.getElementById('corporation_fields');
+
+        function toggleFields() {
+            const selected = document.querySelector('input[name="taxpayer_type"]:checked').value;
+            employeeFields.classList.add('hidden');
+            selfEmployedFields.classList.add('hidden');
+            corporationFields.classList.add('hidden');
+            if (selected === 'employee') {
+                employeeFields.classList.remove('hidden');
+            } else if (selected === 'self-employed') {
+                selfEmployedFields.classList.remove('hidden');
+            } else if (selected === 'corporation') {
+                corporationFields.classList.remove('hidden');
+            }
+        }
+
+        // Initialize toggle on load and on change
+        taxpayerTypeRadios.forEach(r => r.addEventListener('change', toggleFields));
+        toggleFields();
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(form);
+            const taxpayerType = formData.get('taxpayer_type');
+            const gross_annual_income = parseFloat(formData.get('gross_annual_income'));
+
+            // Gather fields based on type
+            let payload = {
+                taxpayer_type: taxpayerType,
+                gross_annual_income: gross_annual_income
+            };
+
+            if (taxpayerType === 'employee') {
+                payload.deductions = parseFloat(formData.get('deductions')) || 0;
+                payload.sss = parseFloat(formData.get('sss')) || 0;
+                payload.philhealth = parseFloat(formData.get('philhealth')) || 0;
+                payload.pagibig = parseFloat(formData.get('pagibig')) || 0;
+                payload.personal_exemption = parseFloat(formData.get('personal_exemption')) || 0;
+                payload.number_of_dependents = parseInt(formData.get('number_of_dependents')) || 0;
+            } else if (taxpayerType === 'self-employed') {
+                payload.use_flat_tax = formData.get('use_flat_tax') === 'on';
+                payload.deductions = parseFloat(formData.get('deductions_self')) || 0;
+                payload.personal_exemption = parseFloat(formData.get('personal_exemption_self')) || 0;
+                payload.number_of_dependents = parseInt(formData.get('number_of_dependents_self')) || 0;
+            } else if (taxpayerType === 'corporation') {
+                payload.deductions = parseFloat(formData.get('deductions_corp')) || 0;
+            }
+
+            try {
+                const response = await fetch('/api/estimate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    alert('Error: ' + (err.detail || 'Unknown error'));
+                    return;
+                }
+                const data = await response.json();
+                document.getElementById('annual_tax_due').textContent = data.annual_tax_due.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                document.getElementById('monthly_tax').textContent = data.monthly_tax.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                document.getElementById('taxable_income').textContent = data.taxable_income.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                document.getElementById('tax_rate_applied').textContent = data.tax_rate_applied;
+                document.getElementById('notes').textContent = data.notes;
+                resultDiv.classList.remove('hidden');
+            } catch (error) {
+                console.error('Fetch error:', error);
+                alert('Network error. See console for details.');
+            }
+        });
+    </script>
+</body>
+</html>

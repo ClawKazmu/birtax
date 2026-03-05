@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
 import os
@@ -13,43 +14,41 @@ logger = logging.getLogger("birtax")
 app = FastAPI(title="BIR Tax Calculator", version="0.1.0")
 
 # TRAIN 2024 individual income tax brackets (for compensation)
-# Brackets: (upper_limit, base_tax, rate)
-# upper_limit is inclusive? We'll use (min, max, base, rate) but easier: sequence of thresholds.
-BRACKETS = [
-    (250_000, 0, 0.00),
-    (400_000, 0, 0.20),
-    (800_000, 30_000, 0.25),
-    (2_000_000, 130_000, 0.30),
-    (8_000_000, 490_000, 0.32),
-    (float('inf'), 2_410_000, 0.35),
+# Format: (upper_limit, rate)
+# Progressive: each bracket applies only to the portion within its range.
+BRACKETS_EMPLOYEE = [
+    (250_000, 0.00),    # Up to 250k: exempt
+    (400_000, 0.15),    # Over 250k up to 400k: 15%
+    (800_000, 0.20),    # Over 400k up to 800k: 20%
+    (2_000_000, 0.25),  # Over 800k up to 2M: 25%
+    (8_000_000, 0.30),  # Over 2M up to 8M: 30%
+    (float('inf'), 0.35) # Over 8M: 35%
 ]
 
 def compute_graduated_tax(taxable_income: float) -> float:
-    # Find the bracket where income <= upper limit
-    for limit, base, rate in BRACKETS:
-        if taxable_income <= limit:
-            # base tax for previous bracket is the base of this bracket?
-            # Actually base is the tax on the lower bound. We need to compute from previous threshold.
-            # Simpler: iterate thresholds
-            break
-    # Alternative: compute by segments
-    tax = 0
-    prev = 0
-    for i, (limit, base, rate) in enumerate(BRACKETS):
-        if taxable_income <= prev:
+    """Compute tax using progressive brackets."""
+    tax = 0.0
+    prev_limit = 0
+    for limit, rate in BRACKETS_EMPLOYEE:
+        if taxable_income <= prev_limit:
             break
         upper = min(taxable_income, limit)
-        amount = upper - prev
+        amount = upper - prev_limit
         tax += amount * rate
-        prev = limit
+        prev_limit = limit
     return tax
 
 class TaxRequest(BaseModel):
     taxpayer_type: Literal["employee", "self-employed", "corporation"]
-    gross_annual_income: float = Field(..., ge=0)
-    deductions: float = Field(0, ge=0)  # optional deductions (if any)
-    use_flat_tax: bool = False  # only for self-employed
-    # other fields: number of dependents not implemented
+    gross_annual_income: float = Field(..., ge=0, description="Total annual gross income before any deductions")
+    deductions: float = Field(0, ge=0, description="Other optional deductions (e.g., business expenses for self-employed, additional deductions)")
+    use_flat_tax: bool = Field(False, description="For self-employed: True to use 8% flat tax on gross receipts")
+    # Optional deduction components for employees:
+    sss: float = Field(0, ge=0, description="SSS contributions (annual)")
+    philhealth: float = Field(0, ge=0, description="PhilHealth premiums (annual)")
+    pagibig: float = Field(0, ge=0, description="Pag-IBIG contributions (annual)")
+    personal_exemption: float = Field(0, ge=0, description="Personal exemption amount (simulation). Under TRAIN, the basic exemption is PHP 250,000 already applied. Use this to simulate additional dependents or exemptions.")
+    number_of_dependents: int = Field(0, ge=0, description="Number of dependents for personal exemption simulation (if using fixed amount per dependent, e.g., 50,000 per dependent)")
 
 class TaxResponse(BaseModel):
     annual_tax_due: float
@@ -60,27 +59,38 @@ class TaxResponse(BaseModel):
 
 @app.post("/api/estimate", response_model=TaxResponse)
 def estimate(req: TaxRequest):
-    # Basic logic:
+    # Compute total deductions and exemptions
+    total_deductions = req.deductions + req.sss + req.philhealth + req.pagibig
+    # Personal exemption simulation: basic 250k is already baked into brackets; this adds extra
+    dependent_exemption = req.number_of_dependents * 50000  # assumed PH 50k per dependent
+    total_exemptions = req.personal_exemption + dependent_exemption
+
+    # For employees and self-employed (graduated), we subtract deductions and exemptions to get taxable
     if req.taxpayer_type == "employee":
-        # Compensation income: taxable = gross - deductions (if allowed, e.g., personal exemption? Not considering)
-        taxable = max(0, req.gross_annual_income - req.deductions)
+        taxable = max(0, req.gross_annual_income - total_deductions - total_exemptions)
         tax = compute_graduated_tax(taxable)
         rate_desc = "Graduated rates (TRAIN)"
+        notes = f"Taxable income after deductions: PHP {taxable:,.2f}. Includes personal exemption simulation: PHP {total_exemptions:,.2f}."
     elif req.taxpayer_type == "self-employed":
         if req.use_flat_tax:
-            # 8% of gross receipts (no deductions)
-            tax = req.gross_annual_income * 0.08
-            rate_desc = "Flat 8% (TRAIN)"
+            # 8% flat tax on gross receipts exceeding 250,000 (no deductions)
+            if req.gross_annual_income > 250_000:
+                tax = (req.gross_annual_income - 250_000) * 0.08
+            else:
+                tax = 0
             taxable = req.gross_annual_income
+            rate_desc = "Flat 8% (TRAIN)"
+            notes = "Flat tax applied to gross receipts exceeding PHP 250,000."
         else:
-            taxable = max(0, req.gross_annual_income - req.deductions)
+            taxable = max(0, req.gross_annual_income - total_deductions - total_exemptions)
             tax = compute_graduated_tax(taxable)
             rate_desc = "Graduated rates (TRAIN)"
+            notes = f"Taxable income after deductions: PHP {taxable:,.2f}. Includes personal exemption simulation: PHP {total_exemptions:,.2f}."
     else:  # corporation
-        # Corporate income tax: regular rate 30% (or 20% for domestic? But we'll use 30% as placeholder)
-        taxable = max(0, req.gross_annual_income - req.deductions)
+        taxable = max(0, req.gross_annual_income - total_deductions)
         tax = taxable * 0.30
         rate_desc = "30% corporate (regular)"
+        notes = "Corporate tax rate 30%. Deductions applied (exemptions not typical for corporations)."
         # There are incentives (PEZA, etc.) not implemented.
 
     monthly = tax / 12
@@ -89,9 +99,13 @@ def estimate(req: TaxRequest):
         monthly_tax=round(monthly, 2),
         taxable_income=round(taxable, 2),
         tax_rate_applied=rate_desc,
-        notes="This is an estimate. Consult a BIR-accredited tax consultant for filing."
+        notes=notes + " This is an estimate. Consult a BIR-accredited tax consultant for filing."
     )
 
 @app.get("/")
+def serve_frontend():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
+
+@app.get("/health")
 def health():
     return {"status": "ok", "service": "birtax"}
