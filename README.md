@@ -200,6 +200,17 @@ Test API directly via Swagger UI at `/docs`.
 - Local government unit (LGU) business tax estimates.
 - Saved scenarios and PDF reports.
 
+## Rate Limiting
+
+- Free tier: **100 API calls per month** per user.
+- Users are identified via HTTP headers:
+  - `X-User-Email`: Your email address (preferred)
+  - `X-API-Key`: Your API key
+  - If neither is provided, the requester's IP address is used.
+- Rate limited responses return **HTTP 429** with a JSON body containing `error`, `message`, `limit`, `remaining`, and `upgrade_info`.
+- Response headers `X-RateLimit-Limit` and `X-RateLimit-Remaining` indicate your current quota status.
+- To upgrade or increase limits, contact the administrator.
+
 ## License
 MIT (or specify your license)
 

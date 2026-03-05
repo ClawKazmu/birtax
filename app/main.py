@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
@@ -6,12 +6,89 @@ import os
 import json
 from dotenv import load_dotenv
 import logging
+from datetime import datetime, timezone
 
 load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("birtax")
 
 app = FastAPI(title="BIR Tax Calculator", version="0.1.0")
+
+# Rate Limiter Implementation (100 calls/month)
+class RateLimiter:
+    def __init__(self):
+        self.usage = {}  # {user_key: {month_key: count}}
+        self.last_reset = {}  # {user_key: month_key}
+    
+    def get_current_month_key(self) -> str:
+        now = datetime.now(timezone.utc)
+        return f"{now.year}-{now.month:02d}"
+    
+    def check_and_increment(self, user_key: str) -> bool:
+        month_key = self.get_current_month_key()
+        
+        if user_key not in self.usage:
+            self.usage[user_key] = {}
+            self.last_reset[user_key] = month_key
+        
+        if self.last_reset[user_key] != month_key:
+            # New month, reset counter
+            self.usage[user_key] = {}
+            self.last_reset[user_key] = month_key
+        
+        current = self.usage[user_key].get(month_key, 0)
+        if current >= 100:
+            return False
+        
+        self.usage[user_key][month_key] = current + 1
+        return True
+    
+    def get_remaining(self, user_key: str) -> int:
+        month_key = self.get_current_month_key()
+        count = self.usage.get(user_key, {}).get(month_key, 0)
+        return max(0, 100 - count)
+
+rate_limiter = RateLimiter()
+
+# Rate limiting middleware to add headers
+@app.middleware("http")
+async def add_rate_limit_headers(request: Request, call_next):
+    response = await call_next(request)
+    if hasattr(request.state, "rate_limit_remaining"):
+        remaining = request.state.rate_limit_remaining
+        response.headers["X-RateLimit-Limit"] = "100"
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+    return response
+
+# Rate limiting dependency
+async def rate_limit_dependency(request: Request):
+    user_email = request.headers.get("X-User-Email")
+    api_key = request.headers.get("X-API-Key")
+    
+    if user_email:
+        user_key = f"email:{user_email}"
+    elif api_key:
+        user_key = f"apikey:{api_key}"
+    else:
+        client = request.client
+        host = client.host if client else "unknown"
+        user_key = f"ip:{host}"
+    
+    if not rate_limiter.check_and_increment(user_key):
+        remaining = rate_limiter.get_remaining(user_key)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "rate_limit_exceeded",
+                "message": "Free tier limit of 100 API calls per month exceeded. Please upgrade for higher limits.",
+                "limit": 100,
+                "remaining": remaining,
+                "upgrade_info": "Contact administrator for paid plans."
+            }
+        )
+    
+    request.state.rate_limit_remaining = rate_limiter.get_remaining(user_key)
+    return user_key
 
 # TRAIN 2024 individual income tax brackets (for compensation)
 # Format: (upper_limit, rate)
@@ -58,7 +135,7 @@ class TaxResponse(BaseModel):
     notes: str = ""
 
 @app.post("/api/estimate", response_model=TaxResponse)
-def estimate(req: TaxRequest):
+def estimate(req: TaxRequest, user_key: str = Depends(rate_limit_dependency)):
     # Compute total deductions and exemptions
     total_deductions = req.deductions + req.sss + req.philhealth + req.pagibig
     # Personal exemption simulation: basic 250k is already baked into brackets; this adds extra
